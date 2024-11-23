@@ -1,0 +1,7 @@
+name = "supahack-webhooks"
+main = "src/index.ts"
+compatibility_date = "2024-11-06"
+
+[vars]
+SUPABASE_API_URL="https://jtwsguhebltgdlnqgmvp.supabase.co"
+
