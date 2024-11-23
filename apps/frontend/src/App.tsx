@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { createClient } from '@supabase/supabase-js'
-import {generateText} from "ai"
-import {createAnthropic} from "@ai-sdk/anthropic"
 import { useChat } from 'ai/react'
 
 interface SpeechSegment {
@@ -36,6 +34,16 @@ interface SpeechRecognitionErrorEvent extends Event {
   message?: string;
 }
 
+interface SpeechSynthesisUtterance {
+  text: string;
+  voice: SpeechSynthesisVoice | null;
+  volume: number;
+  rate: number;
+  pitch: number;
+  lang: string;
+  onend: () => void;
+}
+
 declare global {
   interface Window {
     SpeechRecognition: new () => any;
@@ -61,9 +69,20 @@ function App() {
   const interimTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pauseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const currentTranscriptRef = useRef<string>('')
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const synthRef = useRef<SpeechSynthesis | null>(null)
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
 
   const {messages, input, append} = useChat({
     api: "https://supahack-webhooks.oof2win2.workers.dev/ai/chat",
+    onFinish: (message) => {
+      if (synthRef.current && message.role === 'assistant') {
+        utteranceRef.current = new SpeechSynthesisUtterance(message.content)
+        utteranceRef.current.onend = () => setIsSpeaking(false)
+        setIsSpeaking(true)
+        synthRef.current.speak(utteranceRef.current)
+      }
+    }
   })
 
   // Initialize speech recognition
@@ -255,16 +274,22 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if ('speechSynthesis' in window) {
+      synthRef.current = window.speechSynthesis
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (synthRef.current && isSpeaking) {
+        synthRef.current.cancel()
+      }
+    }
+  }, [isSpeaking])
+
   return (
     <div>
-            {messages.map(message => (
-        <div key={message.id}>
-          {message.role === 'user' ? 'User: ' : 'AI: '}
-          {message.content}
-        </div>
-      ))}
-
-
       <video 
         ref={videoRef} 
         autoPlay 
