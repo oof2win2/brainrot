@@ -18,6 +18,7 @@
     "@supabase/supabase-js": "^2.46.1",
     "ai": "^4.0.3",
     "itty-router": "^5.0.18",
-    "voyageai": "0.0.1-5"
+    "voyageai": "0.0.1-5",
+    "zod": "^3.23.8"
   }
 }

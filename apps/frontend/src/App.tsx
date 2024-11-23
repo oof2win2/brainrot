@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { createClient } from '@supabase/supabase-js'
 import { useChat } from 'ai/react'
+import Anthropic from '@anthropic-ai/sdk';
 
 interface SpeechSegment {
   text: string;
@@ -57,6 +58,11 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 )
 
+const anthropic = new Anthropic({
+  apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY,
+  dangerouslyAllowBrowser: true
+})
+
 
 function App() {
   const [speechSegments, setSpeechSegments] = useState<SpeechSegment[]>([])
@@ -72,15 +78,48 @@ function App() {
   const [isSpeaking, setIsSpeaking] = useState(false)
   const synthRef = useRef<SpeechSynthesis | null>(null)
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const [speechQueue, setSpeechQueue] = useState<string[]>([])
+  const isProcessingSpeechRef = useRef(false)
 
   const {messages, input, append} = useChat({
     api: "https://supahack-webhooks.oof2win2.workers.dev/ai/chat",
+    onToolCall: async (toolCall) => {
+      console.log("tool call", toolCall)
+      if (toolCall.toolCall.toolName === "getCurrentImage") {
+        const image = getCurrentImage()
+        console.log("image", image.slice(image.indexOf(',') + 1)) 
+        const imageDescription = await anthropic.messages.create({
+          model: "claude-3-5-sonnet-20240620",
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/jpeg",
+                    data: image.slice(image.indexOf(',') + 1)
+                  }
+                },
+                {
+                  type: "text",
+                  text: "Describe the image in a few words"
+                }
+              ]
+            }
+          ]
+        })
+        const description = imageDescription.content[0].text as string
+        return description
+      }
+    },
+    maxSteps: 5,
     onFinish: (message) => {
-      if (synthRef.current && message.role === 'assistant') {
-        utteranceRef.current = new SpeechSynthesisUtterance(message.content)
-        utteranceRef.current.onend = () => setIsSpeaking(false)
-        setIsSpeaking(true)
-        synthRef.current.speak(utteranceRef.current)
+      console.log("AI Finished with message", message)
+      if (message.role === 'assistant') {
+        setSpeechQueue(queue => [...queue, message.content])
       }
     }
   })
@@ -282,11 +321,65 @@ function App() {
 
   useEffect(() => {
     return () => {
-      if (synthRef.current && isSpeaking) {
+      if (synthRef.current) {
         synthRef.current.cancel()
+        isProcessingSpeechRef.current = false
+        setSpeechQueue([])
       }
     }
-  }, [isSpeaking])
+  }, [])
+
+  // Add this function inside the App component
+  const getCurrentImage = (): string => {
+    if (!videoRef.current || !canvasRef.current) return '';
+    
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    
+    // Set canvas dimensions to match video dimensions
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    // Draw current video frame to canvas
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    // Convert canvas content to base64 string
+    try {
+      return canvas.toDataURL('image/jpeg');
+    } catch (error) {
+      console.error('Error converting canvas to base64:', error);
+      return '';
+    }
+  }
+
+  // Update the processSpeechQueue function
+  const processSpeechQueue = async () => {
+    if (isProcessingSpeechRef.current || !synthRef.current || speechQueue.length === 0) return;
+    
+    isProcessingSpeechRef.current = true;
+    const text = speechQueue[0];
+    
+    const utterance = new window.SpeechSynthesisUtterance(text);
+    utterance.onend = () => {
+      // Remove the spoken message from the queue
+      setSpeechQueue(prevQueue => prevQueue.filter((_, index) => index !== 0));
+      isProcessingSpeechRef.current = false;
+      setIsSpeaking(false);
+    };
+    
+    setIsSpeaking(true);
+    synthRef.current.speak(utterance);
+  };
+
+  // Update the useEffect to watch for queue changes and process next message
+  useEffect(() => {
+    if (speechQueue.length > 0 && !isProcessingSpeechRef.current) {
+      processSpeechQueue();
+    }
+  }, [speechQueue, isProcessingSpeechRef.current]);
 
   return (
     <div>
