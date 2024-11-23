@@ -3,6 +3,7 @@ import './App.css'
 import { createClient } from '@supabase/supabase-js'
 import {generateText} from "ai"
 import {createAnthropic} from "@ai-sdk/anthropic"
+import { useChat } from 'ai/react'
 
 interface SpeechSegment {
   text: string;
@@ -48,9 +49,6 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 )
 
-const anthropic = createAnthropic({
-  apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY
-})
 
 function App() {
   const [speechSegments, setSpeechSegments] = useState<SpeechSegment[]>([])
@@ -64,27 +62,9 @@ function App() {
   const pauseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const currentTranscriptRef = useRef<string>('')
 
-  const sendToAnthropic = async (userInput: string) => {
-    try {
-      const {text} = await generateText({
-        model: anthropic('claude-3-5-haiku-latest'),
-        messages: [
-          {
-            role: "system",
-            content: "You are a helpful assistant that can answer questions and help with tasks."
-          },
-          {
-            role: "user",
-            content: userInput
-          }
-        ]
-      })
-
-      console.log('Anthropic response:', text)
-    } catch (error) {
-      console.error('Error sending to Anthropic:', error)
-    }
-  }
+  const {messages, input, append} = useChat({
+    api: "https://supahack-webhooks.oof2win2.workers.dev/ai/chat",
+  })
 
   // Initialize speech recognition
   const initializeSpeechRecognition = () => {
@@ -110,7 +90,12 @@ function App() {
         console.log('Speech segment completed:', completedSegment.text)
         
         // Send to Anthropic
-        sendToAnthropic(completedSegment.text)
+        append({
+          role: "user",
+          content: completedSegment.text
+        })
+        
+        console.log("submit")
         
         setSpeechSegments(prev => [...prev, completedSegment])
         currentTranscriptRef.current = ''
@@ -210,7 +195,7 @@ function App() {
     }
   }
 
-  // Clean up old speech segments
+  // Clean up old 3s
   useEffect(() => {
     cleanupIntervalRef.current = setInterval(() => {
       const thirtySecondsAgo = Date.now() - 30000
@@ -272,6 +257,14 @@ function App() {
 
   return (
     <div>
+            {messages.map(message => (
+        <div key={message.id}>
+          {message.role === 'user' ? 'User: ' : 'AI: '}
+          {message.content}
+        </div>
+      ))}
+
+
       <video 
         ref={videoRef} 
         autoPlay 
