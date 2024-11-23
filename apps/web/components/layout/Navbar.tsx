@@ -19,7 +19,7 @@ const SIDEBAR = [
 
 export default function Navbar() {
   return (
-    <div className="h-full w-20 p-2 flex flex-col gap-4 border-r-2 border-border">
+    <div className="h-full w-20 flex-none p-2 flex flex-col gap-4 border-r-2 border-border">
       {SIDEBAR.map((item) => (
         <Link href={item.href} key={item.href}>
           <Button
