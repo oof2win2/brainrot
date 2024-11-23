@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
 import './App.css'
 import { createClient } from '@supabase/supabase-js'
+import {generateText} from "ai"
+import {createAnthropic} from "@ai-sdk/anthropic"
 
 interface SpeechSegment {
   text: string;
@@ -48,15 +48,43 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 )
 
+const anthropic = createAnthropic({
+  apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY
+})
+
 function App() {
-  const [count, setCount] = useState(0)
   const [speechSegments, setSpeechSegments] = useState<SpeechSegment[]>([])
   const [interimSpeech, setInterimSpeech] = useState<string>('')
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const recognitionRef = useRef<any>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const cleanupIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const interimTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pauseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const currentTranscriptRef = useRef<string>('')
+
+  const sendToAnthropic = async (userInput: string) => {
+    try {
+      const {text} = await generateText({
+        model: anthropic('claude-3-5-haiku-latest'),
+        messages: [
+          {
+            role: "system",
+            content: "You are a helpful assistant that can answer questions and help with tasks."
+          },
+          {
+            role: "user",
+            content: userInput
+          }
+        ]
+      })
+
+      console.log('Anthropic response:', text)
+    } catch (error) {
+      console.error('Error sending to Anthropic:', error)
+    }
+  }
 
   // Initialize speech recognition
   const initializeSpeechRecognition = () => {
@@ -73,19 +101,48 @@ function App() {
 
     let isRestarting = false
 
+    const handlePause = () => {
+      if (currentTranscriptRef.current.trim()) {
+        const completedSegment = {
+          text: currentTranscriptRef.current.trim(),
+          timestamp: Date.now()
+        }
+        console.log('Speech segment completed:', completedSegment.text)
+        
+        // Send to Anthropic
+        sendToAnthropic(completedSegment.text)
+        
+        setSpeechSegments(prev => [...prev, completedSegment])
+        currentTranscriptRef.current = ''
+        setInterimSpeech('')
+      }
+    }
+
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       const last = event.results.length - 1
       const transcript = event.results[last][0].transcript
+
+      // Clear any existing pause timeout
+      if (pauseTimeoutRef.current) {
+        clearTimeout(pauseTimeoutRef.current)
+      }
       
       if (event.results[last].isFinal) {
-        setSpeechSegments(prev => [...prev, {
-          text: transcript,
-          timestamp: Date.now()
-        }])
+        currentTranscriptRef.current = transcript
+        // Set a timeout to handle the pause after speech
+        pauseTimeoutRef.current = setTimeout(handlePause, 1000)
         setInterimSpeech('')
       } else {
         setInterimSpeech(transcript)
       }
+    }
+
+    recognition.onspeechend = () => {
+      // When speech ends, wait a bit and then handle the pause
+      if (pauseTimeoutRef.current) {
+        clearTimeout(pauseTimeoutRef.current)
+      }
+      pauseTimeoutRef.current = setTimeout(handlePause, 1000)
     }
 
     recognition.onend = () => {
@@ -204,23 +261,17 @@ function App() {
       if (videoRef.current) {
         videoRef.current.srcObject = null
       }
+      if (interimTimeoutRef.current) {
+        clearTimeout(interimTimeoutRef.current)
+      }
+      if (pauseTimeoutRef.current) {
+        clearTimeout(pauseTimeoutRef.current)
+      }
     }
   }, [])
 
   return (
     <div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
       <video 
         ref={videoRef} 
         autoPlay 
@@ -240,10 +291,18 @@ function App() {
           minHeight: '100px',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
-          color: "#000"
+          color: "#000",
+          transition: 'all 0.3s ease'
         }}>
-          {speechSegments.map(segment => segment.text).join(' ')}
-          <span>
+          <span style={{ display: 'block' }}>
+            {speechSegments.map(segment => segment.text).join(' ')}
+          </span>
+          <span style={{ 
+            color: '#666',
+            display: 'block',
+            minHeight: '1.2em',
+            transition: 'opacity 0.3s ease'
+          }}>
             {interimSpeech && ` ${interimSpeech}`}
           </span>
         </div>

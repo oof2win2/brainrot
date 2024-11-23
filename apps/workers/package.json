@@ -14,7 +14,9 @@
     "wrangler": "^3.90.0"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^1.0.2",
     "@supabase/supabase-js": "^2.46.1",
+    "ai": "^4.0.3",
     "itty-router": "^5.0.18",
     "voyageai": "0.0.1-5"
   }
