@@ -1,38 +1,54 @@
-import { Button } from "@/components/ui/button";
-import Link from "next/link";
-import React from "react";
-import { HiHome } from "react-icons/hi";
-import { BiSolidDashboard } from "react-icons/bi";
+"use client";
 
-const SIDEBAR = [
-  {
-    icon: <HiHome className="text-4xl" />,
-    label: "Home",
-    href: "/",
-  },
-  {
-    icon: <BiSolidDashboard className="text-4xl" />,
-    label: "Videos",
-    href: "/videos",
-  },
-];
+import React, { useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 
 export default function Home() {
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit() {
+    setLoading(true);
+    console.log("submit");
+    setLoading(false);
+  }
+
   return (
-    <div className="w-screen h-screen flex">
-      <div className="h-full w-20 p-2 bg-red-100 flex flex-col gap-4">
-        {SIDEBAR.map((item) => (
-          <Link href={item.href} key={item.href}>
-            <Button
-              variant="ghost"
-              className="w-16 h-16 rounded-2xl p-2 flex flex-col items-center"
-            >
-              <span className="opacity-60">{item.icon}</span>
-              <span className="font-medium">{item.label}</span>
-            </Button>
-          </Link>
-        ))}
-      </div>
+    <div className="w-full h-screen grid place-items-center">
+      <Tabs defaultValue="account" className="max-w-xl w-full">
+        <TabsList>
+          <TabsTrigger value="upload">Upload</TabsTrigger>
+          <TabsTrigger value="link">Link</TabsTrigger>
+        </TabsList>
+        <div className="max-w-xl mt-2 w-full p-4 rounded-2xl border-border border-2">
+          <TabsContent className="mt-0" value="upload">
+            <div className="space-y-4">
+              <Label htmlFor="file">Upload Video</Label>
+              <Input
+                id="file"
+                type="file"
+                accept="video/*"
+                className="cursor-pointer"
+              />
+            </div>
+          </TabsContent>
+          <TabsContent className="mt-0" value="link">
+            <div className="space-y-4">
+              <Label htmlFor="videoLink">Video URL</Label>
+              <Input
+                id="videoLink"
+                type="url"
+                placeholder="Enter video URL here..."
+              />
+            </div>
+          </TabsContent>
+          <Button onClick={handleSubmit} className="w-full" disabled={loading}>
+            {loading ? "Generating..." : "Generate brainrot"}
+          </Button>
+        </div>
+      </Tabs>
     </div>
   );
 }
