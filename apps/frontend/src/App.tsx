@@ -3,6 +3,8 @@ import './App.css'
 import { createClient } from '@supabase/supabase-js'
 import { useChat } from 'ai/react'
 import Anthropic from '@anthropic-ai/sdk';
+import { pipeline, env, read_audio } from '@xenova/transformers';
+env.allowLocalModels = false;
 
 interface SpeechSegment {
   text: string;
@@ -45,6 +47,10 @@ interface SpeechSynthesisUtterance {
   onend: () => void;
 }
 
+interface SpeechGenerator {
+  generate: (text: string) => Promise<Float32Array>;
+}
+
 declare global {
   interface Window {
     SpeechRecognition: new () => any;
@@ -76,10 +82,13 @@ function App() {
   const pauseTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const currentTranscriptRef = useRef<string>('')
   const [isSpeaking, setIsSpeaking] = useState(false)
-  const synthRef = useRef<SpeechSynthesis | null>(null)
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
   const [speechQueue, setSpeechQueue] = useState<string[]>([])
   const isProcessingSpeechRef = useRef(false)
+  const [audioContext] = useState<AudioContext>(() => new AudioContext());
+  const speechGeneratorRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   const {messages, input, append} = useChat({
     api: "https://supahack-webhooks.oof2win2.workers.dev/ai/chat",
@@ -124,115 +133,111 @@ function App() {
     }
   })
 
-  // Initialize speech recognition
-  const initializeSpeechRecognition = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      console.error('Speech recognition not supported in this browser')
-      return null
+  // Add function to initialize ASR pipeline
+  const initializeASR = async () => {
+    try {
+      const p = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en');
+      recognitionRef.current = p;
+
+      console.log('ASR pipeline initialized');
+    } catch (error) {
+      console.error('Error initializing ASR:', error);
     }
+  };
 
-    const recognition = new SpeechRecognition()
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.lang = 'en-US'
+  // Replace initializeSpeechRecognition with this new function
+  const initializeAudioRecording = () => {
+    if (!streamRef.current) return;
 
-    let isRestarting = false
+    audioContextRef.current = new AudioContext();
+    mediaRecorderRef.current = new MediaRecorder(streamRef.current);
 
-    const handlePause = () => {
-      if (currentTranscriptRef.current.trim()) {
-        const completedSegment = {
-          text: currentTranscriptRef.current.trim(),
-          timestamp: Date.now()
+    mediaRecorderRef.current.ondataavailable = async (event) => {
+      if (event.data.size > 0) {
+        audioChunksRef.current.push(event.data);
+      }
+
+      // Process audio when we have enough data
+      if (audioChunksRef.current.length > 0) {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        audioChunksRef.current = []; // Clear the chunks
+
+        try {
+          // Convert blob to URL
+          const audioUrl = URL.createObjectURL(audioBlob);
+          
+          // Use read_audio to get the correct format
+          const audioData = await read_audio(audioUrl, 16000);
+          
+          // Clean up the URL
+          URL.revokeObjectURL(audioUrl);
+          
+          // Transcribe the audio using the correct pipeline method
+          if (recognitionRef.current) {
+            const result = await recognitionRef.current(audioData, {
+              language: "english"
+            });
+            
+            if (result?.text?.trim()) {
+              const completedSegment = {
+                text: result.text.trim(),
+                timestamp: Date.now()
+              };
+              
+              console.log('Speech segment completed:', completedSegment.text);
+              
+              // Send to Anthropic
+              append({
+                role: "user",
+                content: completedSegment.text
+              });
+              
+              setSpeechSegments(prev => [...prev, completedSegment]);
+            }
+          }
+        } catch (error) {
+          console.error('Error processing audio:', error);
         }
-        console.log('Speech segment completed:', completedSegment.text)
-        
-        // Send to Anthropic
-        append({
-          role: "user",
-          content: completedSegment.text
-        })
-        
-        console.log("submit")
-        
-        setSpeechSegments(prev => [...prev, completedSegment])
-        currentTranscriptRef.current = ''
-        setInterimSpeech('')
       }
-    }
+    };
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const last = event.results.length - 1
-      const transcript = event.results[last][0].transcript
+    // Start recording in chunks
+    mediaRecorderRef.current.start(3000); // Process every 3 seconds
+  };
 
-      // Clear any existing pause timeout
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current)
-      }
+  // Update the initialize effect
+  useEffect(() => {
+    const initialize = async () => {
+      // Initialize ASR pipeline first
+      await initializeASR();
       
-      if (event.results[last].isFinal) {
-        currentTranscriptRef.current = transcript
-        // Set a timeout to handle the pause after speech
-        pauseTimeoutRef.current = setTimeout(handlePause, 1000)
-        setInterimSpeech('')
-      } else {
-        setInterimSpeech(transcript)
-      }
-    }
+      // Then initialize media stream
+      const stream = await initializeMediaStream();
+      if (!stream) return;
 
-    recognition.onspeechend = () => {
-      // When speech ends, wait a bit and then handle the pause
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current)
-      }
-      pauseTimeoutRef.current = setTimeout(handlePause, 1000)
-    }
+      // Initialize audio recording
+      initializeAudioRecording();
+    };
 
-    recognition.onend = () => {
-      if (!isRestarting && recognitionRef.current === recognition) {
-        isRestarting = true
-        setTimeout(() => {
-          try {
-            recognition.start()
-            isRestarting = false
-          } catch (error) {
-            console.error('Failed to restart speech recognition:', error)
-          }
-        }, 100)
-      }
-    }
+    initialize();
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      console.error('Speech recognition error:', event.error)
-      if (event.error === 'network') {
-        // Handle network errors
-        setTimeout(() => {
-          if (recognitionRef.current === recognition) {
-            try {
-              recognition.start()
-            } catch (error) {
-              console.error('Failed to restart after network error:', error)
-            }
-          }
-        }, 1000)
-      } else if (event.error === 'not-allowed') {
-        console.error('Microphone access denied')
-      } else if (event.error !== 'aborted') {
-        // Handle other errors except aborted
-        setTimeout(() => {
-          if (recognitionRef.current === recognition) {
-            try {
-              recognition.start()
-            } catch (error) {
-              console.error('Failed to restart after error:', error)
-            }
-          }
-        }, 1000)
+    // Update cleanup function
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
       }
-    }
-
-    return recognition
-  }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
+  }, []);
 
   // Initialize media stream
   const initializeMediaStream = async () => {
@@ -269,65 +274,64 @@ function App() {
     }
   }, [])
 
-  // Initialize everything
-  useEffect(() => {
-    const initialize = async () => {
-      // Initialize media stream first
-      const stream = await initializeMediaStream()
-      if (!stream) return
-
-      // Then initialize speech recognition
-      const recognition = initializeSpeechRecognition()
-      if (!recognition) return
-
-      recognitionRef.current = recognition
-      recognition.start()
+  // Add this function to initialize the speech generator
+  const initializeSpeechGenerator = async () => {
+    try {
+      speechGeneratorRef.current = await pipeline('text-to-speech', 'Xenova/speecht5_tts');
+      console.log('Speech generator initialized');
+    } catch (error) {
+      console.error('Error initializing speech generator:', error);
     }
+  };
 
-    initialize()
+  // Add this function to play audio from Float32Array
+  const playAudio = async (audioData: Float32Array) => {
+    const buffer = audioContext.createBuffer(1, audioData.length, 16000);
+    buffer.getChannelData(0).set(audioData);
+    
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    
+    source.onended = () => {
+      setIsSpeaking(false);
+      // Process next item in queue
+      isProcessingSpeechRef.current = false;
+      setSpeechQueue(prevQueue => prevQueue.filter((_, index) => index !== 0));
+    };
+    
+    setIsSpeaking(true);
+    source.start();
+  };
 
-    // Cleanup function
+  // Update the processSpeechQueue function
+  const processSpeechQueue = async () => {
+    if (isProcessingSpeechRef.current || !speechGeneratorRef.current || speechQueue.length === 0) return;
+    
+    isProcessingSpeechRef.current = true;
+    const text = speechQueue[0];
+    
+    try {
+      const result = await speechGeneratorRef.current.generate(text);
+      await playAudio(result.audio);
+    } catch (error) {
+      console.error('Error generating speech:', error);
+      isProcessingSpeechRef.current = false;
+      setSpeechQueue(prevQueue => prevQueue.filter((_, index) => index !== 0));
+    }
+  };
+
+  // Replace the speech synthesis initialization effect with the new one
+  useEffect(() => {
+    initializeSpeechGenerator();
+    
     return () => {
-      // Stop speech recognition
-      if (recognitionRef.current) {
-        recognitionRef.current.stop()
-        recognitionRef.current = null
+      // Cleanup audio context if needed
+      if (audioContext.state !== 'closed') {
+        audioContext.close();
       }
-
-      // Stop all tracks in the media stream
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-        streamRef.current = null
-      }
-
-      // Clear video srcObject
-      if (videoRef.current) {
-        videoRef.current.srcObject = null
-      }
-      if (interimTimeoutRef.current) {
-        clearTimeout(interimTimeoutRef.current)
-      }
-      if (pauseTimeoutRef.current) {
-        clearTimeout(pauseTimeoutRef.current)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    if ('speechSynthesis' in window) {
-      synthRef.current = window.speechSynthesis
-    }
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      if (synthRef.current) {
-        synthRef.current.cancel()
-        isProcessingSpeechRef.current = false
-        setSpeechQueue([])
-      }
-    }
-  }, [])
+    };
+  }, []);
 
   // Add this function inside the App component
   const getCurrentImage = (): string => {
@@ -355,31 +359,19 @@ function App() {
     }
   }
 
-  // Update the processSpeechQueue function
-  const processSpeechQueue = async () => {
-    if (isProcessingSpeechRef.current || !synthRef.current || speechQueue.length === 0) return;
-    
-    isProcessingSpeechRef.current = true;
-    const text = speechQueue[0];
-    
-    const utterance = new window.SpeechSynthesisUtterance(text);
-    utterance.onend = () => {
-      // Remove the spoken message from the queue
-      setSpeechQueue(prevQueue => prevQueue.filter((_, index) => index !== 0));
-      isProcessingSpeechRef.current = false;
-      setIsSpeaking(false);
-    };
-    
-    setIsSpeaking(true);
-    synthRef.current.speak(utterance);
-  };
-
-  // Update the useEffect to watch for queue changes and process next message
+  // Add this effect to periodically save frames
   useEffect(() => {
-    if (speechQueue.length > 0 && !isProcessingSpeechRef.current) {
-      processSpeechQueue();
-    }
-  }, [speechQueue, isProcessingSpeechRef.current]);
+    const frameInterval = setInterval(() => {
+      const image = getCurrentImage();
+      if (image) {
+        saveFrameToSupabase(image);
+      }
+    }, 1000);
+
+    return () => {
+      clearInterval(frameInterval);
+    };
+  }, []);
 
   return (
     <div>
